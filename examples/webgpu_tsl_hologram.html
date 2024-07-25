@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<title>three.js webgpu - hologram</title>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<link type="text/css" rel="stylesheet" href="main.css">
+	</head>
+	<body>
+
+		<div id="info">
+			<a href="https://threejs.org" target="_blank" rel="noopener">three.js webgpu</a> - hologram
+			<br>
+			Based on <a href="https://threejs-journey.com/lessons/hologram-shader" target="_blank" rel="noopener">Three.js Journey</a> lesson
+		</div>
+
+		<script type="importmap">
+			{
+				"imports": {
+					"three": "../build/three.webgpu.js",
+					"three/tsl": "../build/three.webgpu.js",
+					"three/addons/": "./jsm/"
+				}
+			}
+		</script>
+
+		<script type="module">
+
+			import * as THREE from 'three';
+			import { add, color, hash, mix, modelWorldMatrix, normalView, positionLocal, positionWorld, sin, timerGlobal, tslFn, uniform, vec3, vec4 } from 'three/tsl';
+
+			import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+			import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+			import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
+
+			let camera, scene, renderer, controls;
+
+			init();
+
+			function init() {
+
+				camera = new THREE.PerspectiveCamera( 25, window.innerWidth / window.innerHeight, 0.1, 100 );
+				camera.position.set( 8, 1, 4 );
+
+				scene = new THREE.Scene();
+
+				// loaders
+
+				const gltfLoader = new GLTFLoader();
+
+				// material
+
+				const material = new THREE.MeshBasicNodeMaterial( {
+					transparent: true,
+					side: THREE.DoubleSide,
+					depthWrite: false,
+					blending: THREE.AdditiveBlending
+				} );
+
+				// position
+
+				const worldPosition = modelWorldMatrix.mul( positionLocal );
+
+				const glitchTime = timerGlobal().sub( worldPosition.y.mul( 0.5 ) );
+				const glitch = add(
+					sin( glitchTime ),
+					sin( glitchTime.mul( 3.45 ) ),
+					sin( glitchTime.mul( 8.76 ) )
+				).div( 3 ).smoothstep( 0.3, 1 );
+
+				const glitchOffset = vec3(
+					hash( worldPosition.xz.abs().mul( 9999 ) ).sub( 0.5 ),
+					0,
+					hash( worldPosition.yx.abs().mul( 9999 ) ).sub( 0.5 ),
+				).mul( glitch.mul( 0.5 ) );
+
+				const position = positionLocal.add( glitchOffset );
+
+				material.positionNode = position;
+				material.positionNode = position.add(vec3(1, 1, 1));
+
+				// color
+
+				const colorInside = uniform( color( '#ff6088' ) );
+				const colorOutside = uniform( color( '#4d55ff' ) );
+
+				material.colorNode = tslFn( () => {
+
+					const position = positionWorld;
+
+					const stripes = position.y.sub( timerGlobal( 0.02 ) ).mul( 20 ).mod( 1 ).pow( 3 );
+
+					const fresnel = normalView.dot( vec3( 0, 0, 1 ) ).abs().oneMinus();
+					const falloff = fresnel.smoothstep( 0.8, 0.2 );
+					const alpha = stripes.mul( fresnel ).add( fresnel.mul( 1.25 ) ).mul( falloff );
+					const finalColor = mix( colorInside, colorOutside, fresnel.add( glitch.mul( 0.6 ) ) );
+
+					return vec4( finalColor, alpha );
+
+				} )();
+
+				// debug
+
+				const gui = new GUI();
+
+				gui.addColor( { color: colorInside.value.getHex( THREE.SRGBColorSpace ) }, 'color' )
+					.name( 'colorInside' )
+					.onChange( ( value ) => colorInside.value.set( value ) );
+
+				gui.addColor( { color: colorOutside.value.getHex( THREE.SRGBColorSpace ) }, 'color' )
+					.name( 'colorOutside' )
+					.onChange( ( value ) => colorOutside.value.set( value ) );
+
+				// torus knot
+
+				const torusKnot = new THREE.Mesh(
+					new THREE.TorusKnotGeometry( 0.6, 0.25, 128, 32 ),
+					material
+				);
+				torusKnot.position.x = 3;
+				scene.add( torusKnot );
+
+				// sphere
+
+				const sphere = new THREE.Mesh(
+					new THREE.SphereGeometry( 1, 64, 64 ),
+					material
+				);
+				sphere.position.x = - 3;
+				scene.add( sphere );
+
+				// soldier
+
+				gltfLoader.load(
+					'./models/gltf/Soldier.glb',
+					( gltf ) => {
+
+						gltf.scene.traverse( child => {
+
+							if ( child.isMesh ) {
+
+								child.material = material;
+
+							}
+
+						} );
+
+						gltf.scene.scale.setScalar( 1.75 );
+						gltf.scene.rotation.y = Math.PI;
+						gltf.scene.position.y = - 1.5;
+						scene.add( gltf.scene );
+
+					}
+				);
+
+				// renderer
+
+				renderer = new THREE.WebGPURenderer( { antialias: true } );
+				renderer.setPixelRatio( window.devicePixelRatio );
+				renderer.setSize( window.innerWidth, window.innerHeight );
+				renderer.setAnimationLoop( animate );
+				renderer.setClearColor( '#231726' );
+				document.body.appendChild( renderer.domElement );
+
+				// controls
+
+				controls = new OrbitControls( camera, renderer.domElement );
+				controls.enableDamping = true;
+				controls.minDistance = 0.1;
+				controls.maxDistance = 50;
+
+				window.addEventListener( 'resize', onWindowResize );
+
+			}
+
+			function onWindowResize() {
+
+				camera.aspect = window.innerWidth / window.innerHeight;
+				camera.updateProjectionMatrix();
+
+				renderer.setSize( window.innerWidth, window.innerHeight );
+
+			}
+
+			async function animate() {
+
+				controls.update();
+
+				renderer.render( scene, camera );
+
+			}
+
+		</script>
+	</body>
+</html>
